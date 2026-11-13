@@ -1,0 +1,36 @@
+# Dispatched by e2e/run.ps1 on a temporary Forgejo instance; the markers are asserted in the job logs.
+on: workflow_dispatch
+jobs:
+  host:
+    runs-on: windows
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checked out
+        run: if (-not (Test-Path README.md)) { throw 'README.md missing after checkout' } else { 'CHECKOUT_OK' }
+      - name: Default shell
+        run: "'DEFAULT_SHELL_OK ' + $PSVersionTable.PSEdition"
+      - name: Windows PowerShell
+        shell: powershell
+        run: "'WINPS_OK ' + $PSVersionTable.PSVersion"
+      - name: .NET
+        run: |
+          dotnet --version
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          'DOTNET_OK'
+      - name: Job summary
+        run: |
+          '### E2E_SUMMARY_OK' | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+          'payload-from-windows' | Set-Content payload.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: e2e-payload
+          path: payload.txt
+  download:
+    needs: host
+    runs-on: windows
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: e2e-payload
+      - name: Compare artifact
+        run: if ((Get-Content payload.txt) -ne 'payload-from-windows') { throw 'artifact content mismatch' } else { 'ARTIFACT_OK' }

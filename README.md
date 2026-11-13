@@ -9,6 +9,29 @@
 A Windows-compiled version of the Forgejo Runner, providing a pre-built binary for executing Forgejo Actions workflows on Windows systems. 
 This repository offers convenient downloads for users seeking a straightforward installation without the need for manual compilation.
 
+## Status: experimental community build (Runner v13.2.1, Windows amd64, host jobs)
+
+Upstream only supports Linux; this build is unofficial. The `Build Release` workflow (manual dispatch, defaults: tag `v13.2.1`, goal `draft`) builds the unmodified upstream tag for **Windows amd64** only and runs:
+
+- the upstream `./internal/...` and `./act/...` Go tests on Windows (`test-runner` and `test-act`);
+- an end-to-end test (`test-e2e`, [`e2e/run.ps1`](e2e/run.ps1)) against a throwaway **Forgejo 17.0.1** server: it registers the built `.exe` with label `windows:host`, cancels a running job (run must end `cancelled`, the step's process must be gone), then runs [`e2e/smoke.yml`](e2e/smoke.yml): `actions/checkout@v4`, the default shell (`pwsh`), `shell: powershell` (Windows PowerShell 5.1), `dotnet --version`, a job summary, and `actions/upload-artifact@v4` → `actions/download-artifact@v4` in a second job.
+
+A release is only published as non-draft when all of these pass and goal is `release`. To try a build: download `forgejo-runner-windows-amd64.exe` from the workflow run's artifacts or a draft release, then register it as in the [official docs](https://forgejo.org/docs/latest/admin/actions/runner-installation/), with a host label in the config:
+
+```yaml
+runner:
+  labels:
+    - windows:host   # jobs use `runs-on: windows`; steps run directly on this machine, default shell pwsh
+```
+
+**Security:** host jobs run the repository's workflow code directly on the machine with the rights of the runner's Windows account; there is no container isolation. Do not run jobs from untrusted repositories or public pull requests on a machine that holds secrets or has access to anything you care about.
+
+**Known limitations:**
+
+- Only native Windows host jobs are tested. Docker/container jobs, Windows containers, `386` and `arm64` are not built or tested.
+- `test-act` skips two upstream Docker CLI parsing tests (`TestParseRunLinks/bridge/onelink`, `TestParseNetworkConfig/invalid-mixed-network-types`): they assume Linux network semantics and fail on Windows, where the Docker API treats `bridge`/`host` as user-defined networks. This only concerns the Docker backend.
+- The e2e test covers one runner on a GitHub-hosted `windows-latest` VM, not long-running service installs, upgrades or your production setup.
+
 ## What is Forgejo?
 
 Forgejo is a self-hosted, lightweight software forge designed for version control and collaboration. 

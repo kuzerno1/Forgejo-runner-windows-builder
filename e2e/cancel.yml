@@ -1,0 +1,17 @@
+# Dispatched and then cancelled by e2e/run.ps1; the PID file lets the script check the step process was killed.
+on:
+  workflow_dispatch:
+    inputs:
+      pidfile:
+        required: true
+jobs:
+  sleep:
+    runs-on: windows
+    steps:
+      - name: Sleep until cancelled
+        env:
+          PIDFILE: ${{ inputs.pidfile }}
+        run: |
+          Set-Content -Path $env:PIDFILE -Value $PID
+          Start-Sleep -Seconds 600
+          'NOT_CANCELLED'

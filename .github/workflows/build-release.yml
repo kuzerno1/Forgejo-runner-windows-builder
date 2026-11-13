@@ -1,6 +1,7 @@
 # This workflow:
 #  - builds and uploads a binary artifact for each Windows architecture
 #  - tests the runner on Windows with a Forgejo server container running on Windows Subsystem for Linux (WSL)
+#  - runs the built binary end-to-end as a native Windows host runner against that server (e2e/run.ps1)
 #  - releases the binary artifacts as a GitHub release
 
 name: Build Release
@@ -10,9 +11,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to release'
+        description: 'Forgejo Runner tag to build (vX.Y.Z)'
         type: string
-        required: true
+        default: v13.2.1
       goal:
         description: 'Goal of run'
         type: choice
@@ -21,7 +22,17 @@ on:
           - release
           - draft
           - test-fork
-        default: release
+        default: draft
+
+# Inputs reach scripts only through env and are validated there.
+env:
+  RUNNER_TAG: ${{ inputs.tag }}
+  RUNNER_REPO: ${{ inputs.goal == 'test-fork' && vars.TEST_FORK || 'forgejo/runner' }}
+  FORGEJO_IMAGE: codeberg.org/forgejo/forgejo:17.0.1-rootless
+
+defaults:
+  run:
+    shell: pwsh
 
 jobs:
   build:
@@ -30,33 +41,44 @@ jobs:
     strategy:
       matrix:
         include:
-          - architecture: '386'
-            os: windows-latest
+          # Only amd64 is covered by the e2e test; 386 (windows-latest) and arm64 (windows-11-arm) are not built for now.
           - architecture: amd64
             os: windows-latest
-          - architecture: arm64
-            os: windows-11-arm
     steps:
-      - uses: actions/checkout@v6
+      - &checkout-runner-source
+        name: Checkout runner source
+        # Anonymous clone of the public source: no token is needed or sent to code.forgejo.org.
+        run: |
+          if ($env:RUNNER_TAG -notmatch '^v\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$' -or $env:RUNNER_REPO -notmatch '^[\w.-]+/[\w.-]+$') {
+            throw "Invalid tag '$env:RUNNER_TAG' or repository '$env:RUNNER_REPO'"
+          }
+          git -c advice.detachedHead=false clone --depth 1 --branch $env:RUNNER_TAG "https://code.forgejo.org/$env:RUNNER_REPO.git" .
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
         with:
-          github-server-url: https://code.forgejo.org
-          repository: ${{ inputs.goal == 'test-fork' && vars.TEST_FORK || 'forgejo/runner' }}
-          ref: ${{ inputs.tag }}
-          token: ${{ secrets.CODE_FORGEJO_TOKEN }}
+          go-version-file: go.mod
 
       - name: Build for ${{ matrix.architecture }}
+        env:
+          GOOS: windows
+          GOARCH: ${{ matrix.architecture }}
         run: |
-          $env:GOOS = 'windows'
-          $env:GOARCH = '${{ matrix.architecture }}'
+          go version
+          # The module path carries the major version (v12, v13, ...), so read it instead of hardcoding it.
+          $module = go list -m
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           go build `
-            -ldflags "-s -w -X code.forgejo.org/forgejo/runner/v12/internal/pkg/ver.version=${{ inputs.tag }}" `
-            -o forgejo-runner-windows-${{ matrix.architecture }}.exe
+            -ldflags "-s -w -X $module/internal/pkg/ver.version=$env:RUNNER_TAG" `
+            -o forgejo-runner-windows-$env:GOARCH.exe
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
       - name: Check Version Output
         run: |
           $VERSION_OUTPUT = & .\forgejo-runner-windows-${{ matrix.architecture }}.exe --version
-          if ($VERSION_OUTPUT -ne 'forgejo-runner version ${{ inputs.tag }}') {
-            Write-Output "Version mismatch: got $VERSION_OUTPUT expected forgejo-runner version ${{ inputs.tag }}"
+          if ($VERSION_OUTPUT -ne "forgejo-runner version $env:RUNNER_TAG") {
+            Write-Output "Version mismatch: got $VERSION_OUTPUT expected forgejo-runner version $env:RUNNER_TAG"
             exit 1
           }
 
@@ -77,13 +99,7 @@ jobs:
       DOCKER_HOST: npipe:////./pipe/podman-machine-default
 
     steps:
-      - name: Windows - Checkout code
-        uses: actions/checkout@v6
-        with:
-          github-server-url: https://code.forgejo.org
-          repository: ${{ inputs.goal == 'test-fork' && vars.TEST_FORK || 'forgejo/runner' }}
-          ref: ${{ inputs.tag }}
-          token: ${{ secrets.CODE_FORGEJO_TOKEN }}
+      - *checkout-runner-source
 
       - name: Install Podman
         uses: redhat-actions/podman-install@main
@@ -97,7 +113,7 @@ jobs:
             -e FORGEJO__security__INSTALL_LOCK=true `
             -e FORGEJO__server__DOMAIN=localhost `
             -e FORGEJO__server__ROOT_URL=${{ env.FORGEJO_ROOT_URL }} `
-            codeberg.org/forgejo/forgejo:11.0-rootless
+            $env:FORGEJO_IMAGE
 
       - name: Windows - Set up Go
         uses: actions/setup-go@v6
@@ -110,9 +126,11 @@ jobs:
           go install gotest.tools/gotestsum@v1.13.0
 
       - name: WSL - Register Runner on Forgejo Server
-        # Starting the Forgejo server takes some time.
-        # That time used to install go.
         run: |
+          for ($i = 1; $i -le $env:MAX_WAIT_ITERATIONS; $i++) {
+            try { Invoke-RestMethod "${env:FORGEJO_ROOT_URL}api/healthz" | Out-Null; break } catch { Start-Sleep -Seconds 5 }
+          }
+          if ($i -gt $env:MAX_WAIT_ITERATIONS) { docker logs forgejo; throw 'Forgejo did not become ready' }
           docker exec forgejo forgejo admin user create --admin --username ${{ env.FORGEJO_ADMIN_USER }} --password ${{ env.FORGEJO_ADMIN_PASSWORD }} --email root@example.com
           docker exec forgejo forgejo forgejo-cli actions register --labels docker --name therunner --secret ${{ env.FORGEJO_RUNNER_SECRET }}
 
@@ -151,13 +169,7 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - name: Windows - Checkout code
-        uses: actions/checkout@v6
-        with:
-          github-server-url: https://code.forgejo.org
-          repository: ${{ inputs.goal == 'test-fork' && vars.TEST_FORK || 'forgejo/runner' }}
-          ref: ${{ inputs.tag }}
-          token: ${{ secrets.CODE_FORGEJO_TOKEN }}
+      - *checkout-runner-source
 
       - name: Install Podman
         uses: redhat-actions/podman-install@main
@@ -173,7 +185,10 @@ jobs:
           go install gotest.tools/gotestsum@v1.13.0
 
       - name: Windows - Run tests
-        run: gotestsum --jsonfile test-results.json --format pkgname -- -v ./act/... -args -features "-"
+        # The two skipped cases are Docker CLI network-flag parsing tests that assume Linux semantics:
+        # on Windows the Docker API treats "bridge" and "host" as user-defined networks. They only
+        # affect the docker backend, not host jobs (see README, "Known limitations").
+        run: gotestsum --jsonfile test-results.json --format pkgname -- -v -skip '^TestParseRunLinks$/^bridge$/^onelink$|^TestParseNetworkConfig$/^invalid-mixed-network-types$' ./act/... -args -features "-"
         env:
           ACT_REPOSITORY: ${{ inputs.goal == 'test-fork' && vars.TEST_FORK || 'forgejo/runner' }}  # Needed for TestRunContext_GetBindsAndMounts test case
           DOCKER_HOST: npipe:////./pipe/podman-machine-default
@@ -186,9 +201,48 @@ jobs:
           path: test-results.json
           reporter: golang-json
 
+  test-e2e:
+    name: E2E - Windows host jobs against Forgejo 17
+    needs: build
+    runs-on: windows-latest
+    env:
+      FORGEJO_ROOT_URL: 'http://localhost:3000/'
+      DOCKER_HOST: npipe:////./pipe/podman-machine-default
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: forgejo-runner-windows-amd64
+
+      - name: Install Podman
+        uses: redhat-actions/podman-install@main
+
+      - name: WSL - Start Forgejo Server
+        run: |
+          docker run -d --name forgejo -p 3000:3000 `
+            -e FORGEJO__security__INSTALL_LOCK=true `
+            -e FORGEJO__server__ROOT_URL=$env:FORGEJO_ROOT_URL `
+            $env:FORGEJO_IMAGE
+          for ($i = 1; $i -le 60; $i++) {
+            try { Invoke-RestMethod "${env:FORGEJO_ROOT_URL}api/healthz" | Out-Null; break } catch { Start-Sleep -Seconds 5 }
+          }
+          if ($i -gt 60) { docker logs forgejo; throw 'Forgejo did not become ready' }
+          docker exec forgejo forgejo --version
+          docker exec forgejo forgejo admin user create --admin --username admin_user --password admin_password --email root@example.com --must-change-password=false
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Run e2e smoke test
+        run: ./e2e/run.ps1 -Runner ./forgejo-runner-windows-amd64.exe
+
+      - name: Forgejo server log
+        if: ${{ !cancelled() }}
+        run: docker logs forgejo
+
   release:
     runs-on: ubuntu-latest
-    needs: [build, test-runner, test-act]
+    needs: [build, test-runner, test-act, test-e2e]
     if: ${{ always() && needs.build.result == 'success' && inputs.goal != 'test-fork' }}
     permissions:
       contents: write
@@ -202,10 +256,12 @@ jobs:
         with:
           tag_name: ${{ inputs.tag }}
           files: forgejo-runner-windows-*/forgejo-runner-windows-*.exe
-          draft: ${{ needs.test-runner.result != 'success' || needs.test-act.result != 'success' || inputs.goal != 'release' }}
+          draft: ${{ needs.test-runner.result != 'success' || needs.test-act.result != 'success' || needs.test-e2e.result != 'success' || inputs.goal != 'release' }}
           prerelease: ${{ contains(inputs.tag, 'beta') || contains(inputs.tag, 'alpha') }}
           fail_on_unmatched_files: true
           body: |
+            Unofficial Windows build of the unmodified Forgejo Runner ${{ inputs.tag }} (GPL-3.0-or-later). Upstream supports Linux only; see the README for what is tested and known limitations.
+
             See [original release notes](https://code.forgejo.org/forgejo/runner/releases/tag/${{ inputs.tag }}).
             
             Forgejo runner:
