@@ -31,7 +31,7 @@ runner:
 - Only native Windows host jobs are tested. Docker/container jobs, Windows containers, `386` and `arm64` are not built or tested.
 - `test-act` skips two upstream Docker CLI parsing tests (`TestParseRunLinks/bridge/onelink`, `TestParseNetworkConfig/invalid-mixed-network-types`): they assume Linux network semantics and fail on Windows, where the Docker API treats `bridge`/`host` as user-defined networks. This only concerns the Docker backend.
 - `actions/upload-artifact@v4+`/`download-artifact@v4+` refuse non-GitHub servers (`GHESNotSupportedError`); use `forgejo/upload-artifact@v4` / `forgejo/download-artifact@v4` (or `@v3`). This is not Windows-specific.
-- Git for Windows limits paths to 260 characters unless `git config --system core.longpaths true` is set. The runner caches actions as `<workdir_parent>\xx\<62 hex>\worktrees\<62 hex>`, so a deep `host.workdir_parent` can break action checkouts; `test-act` enables long paths because upstream `TestClone/Offline_mode_*` exceeds the limit under `%TEMP%`.
+- Keep `host.workdir_parent` short (default `%USERPROFILE%\.cache\act` works). The runner caches actions as `<workdir_parent>\…\xx\<62 hex>` with Git worktree metadata under `worktrees\<62 hex>`; when those paths exceed 260 characters Git fails with `gitfile does not point to a valid repository`, and `core.longpaths=true` did not help in our tests. Upstream `TestClone/Offline_mode_*` hits this from the default `%TEMP%` (`C:\Users\RUNNER~1\AppData\Local\Temp`), so `test-act` runs with `TMP`/`TEMP` set to the shorter `runner.temp`; the test itself still runs and passes.
 - The e2e test covers one runner on a GitHub-hosted `windows-latest` VM, not long-running service installs, upgrades or your production setup.
 
 ## What is Forgejo?
