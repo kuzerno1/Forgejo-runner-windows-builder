@@ -1,0 +1,35 @@
+# Copy to .forgejo/workflows/ of the test repository and start it via Actions > "Run workflow".
+on: workflow_dispatch
+jobs:
+  host:
+    runs-on: windows-test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Environment
+        run: |
+          "Runner: $env:RUNNER_NAME on $env:COMPUTERNAME as $env:USERNAME"
+          "Workspace: $env:GITHUB_WORKSPACE"
+          "pwsh $($PSVersionTable.PSVersion)"
+          Get-ChildItem -Name
+      - name: Windows PowerShell
+        shell: powershell
+        run: "'Windows PowerShell ' + $PSVersionTable.PSVersion"
+      - name: .NET
+        run: dotnet --info
+      - name: Job summary
+        run: |
+          '### Windows test runner works' | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+          'payload' | Set-Content payload.txt
+      # actions/upload-artifact@v4+ rejects non-GitHub servers; use Forgejo's fork.
+      - uses: forgejo/upload-artifact@v4
+        with:
+          name: windows-test
+          path: payload.txt
+  download:
+    needs: host
+    runs-on: windows-test
+    steps:
+      - uses: forgejo/download-artifact@v4
+        with:
+          name: windows-test
+      - run: if ((Get-Content payload.txt) -ne 'payload') { throw 'artifact mismatch' } else { 'artifact OK' }

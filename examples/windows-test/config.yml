@@ -1,0 +1,19 @@
+# Config to try this Windows build next to an existing runner.
+# Replace server.connections with the snippet Forgejo shows under
+# <test repository> > Settings > Actions > Runners > Create new runner.
+# The token grants access to Forgejo: keep this file readable only by the runner account.
+log:
+  level: info
+runner:
+  capacity: 1
+  labels:
+    - windows-test:host # jobs with `runs-on: windows-test` run directly on this machine
+host:
+  # Own, short cache/work dir: not shared with another runner, and Git fails on action cache paths over 260 characters.
+  workdir_parent: 'C:\forgejo-runner-test\work'
+server:
+  connections:
+    forgejo:
+      url: https://forgejo.example.com/
+      uuid: 00000000-0000-0000-0000-000000000000
+      token: REPLACE_WITH_RUNNER_TOKEN

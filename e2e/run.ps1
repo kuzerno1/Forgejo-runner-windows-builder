@@ -1,12 +1,11 @@
-# End-to-end smoke test: registers a Windows forgejo-runner.exe with a running, throwaway Forgejo
-# server (container "forgejo", admin user already created), then dispatches e2e/cancel.yml and
+# End-to-end smoke test: connects a Windows forgejo-runner.exe as a repository-level runner to a running,
+# throwaway Forgejo server (admin user already created), then dispatches e2e/cancel.yml and
 # e2e/smoke.yml as native Windows host jobs and asserts their results through the Forgejo API.
 param(
     [Parameter(Mandatory)][string]$Runner,
     [string]$Url = 'http://localhost:3000',
     [string]$User = 'admin_user',
-    [string]$Password = 'admin_password',
-    [string]$Container = 'forgejo'
+    [string]$Password = 'admin_password'
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -46,6 +45,7 @@ function AssertContains([string]$Text, [string]$Marker, [string]$Where) {
 }
 
 $work = New-Item -ItemType Directory -Force -Path (Join-Path ([IO.Path]::GetTempPath()) 'forgejo-runner-e2e')
+$workdirParent = 'C:\forgejo-runner-test\work'  # same value as examples/windows-test/config.yml
 Push-Location $work
 $daemon = $null
 try {
@@ -56,16 +56,27 @@ try {
     }
     Api POST "/repos/$repo/contents" @{ branch = 'main'; message = 'Add e2e workflows'; files = @($files) } | Out-Null
 
-    # Register with a random shared secret, as documented for forgejo-cli + create-runner-file.
-    $secret = -join (1..40 | ForEach-Object { '{0:x}' -f (Get-Random -Maximum 16) })
-    docker exec $Container forgejo forgejo-cli actions register --secret $secret --name windows-e2e
-    if ($LASTEXITCODE) { throw "forgejo-cli actions register failed ($LASTEXITCODE)" }
-    Set-Content config.yml "log:`n  level: debug`nrunner:`n  labels:`n    - windows:host"
-    & $Runner create-runner-file --config config.yml --instance $Url --secret $secret --name windows-e2e
-    if ($LASTEXITCODE) { throw "create-runner-file failed ($LASTEXITCODE)" }
+    # Create the runner in Forgejo and declare it in server.connections, the non-deprecated v13 flow
+    # (Forgejo shows the same uuid/token/snippet under Settings > Actions > Runners > Create new runner).
+    $registration = Api POST "/repos/$repo/actions/runners" @{ name = 'windows-e2e' }
+    Set-Content config.yml @"
+log:
+  level: debug
+runner:
+  labels:
+    - windows:host
+host:
+  workdir_parent: '$workdirParent'
+server:
+  connections:
+    forgejo:
+      url: $Url/
+      uuid: $($registration.uuid)
+      token: $($registration.token)
+"@
     $daemon = Start-Process $Runner -ArgumentList 'daemon', '--config', 'config.yml' -PassThru -NoNewWindow `
         -RedirectStandardOutput runner.log -RedirectStandardError runner-stderr.log
-    WaitFor { (Api GET '/admin/actions/runners') | Where-Object { $_.name -eq 'windows-e2e' -and $_.status -ne 'offline' } } 120 'runner to come online' | Out-Null
+    WaitFor { (Api GET "/repos/$repo/actions/runners") | Where-Object { $_.name -eq 'windows-e2e' -and $_.status -ne 'offline' } } 120 'runner to come online' | Out-Null
     Write-Host 'OK: runner online'
 
     # 1. Cancellation: the run must end as cancelled and the step's PowerShell process must be gone.
@@ -104,6 +115,8 @@ try {
     }
     AssertContains ($summaries -join "`n") 'E2E_SUMMARY_OK' 'job summary'
     if ($daemon.HasExited) { throw 'runner daemon exited during the smoke run' }
+    if (-not (Get-ChildItem $workdirParent -ErrorAction SilentlyContinue)) { throw "host.workdir_parent $workdirParent was not used" }
+    Write-Host "OK: jobs ran under host.workdir_parent $workdirParent"
     Write-Host 'E2E PASSED'
 }
 finally {

@@ -14,15 +14,15 @@ This repository offers convenient downloads for users seeking a straightforward 
 Upstream only supports Linux; this build is unofficial. The `Build Release` workflow (manual dispatch, defaults: tag `v13.2.1`, goal `draft`) builds the unmodified upstream tag for **Windows amd64** only and runs:
 
 - the upstream `./internal/...` and `./act/...` Go tests on Windows (`test-runner` and `test-act`);
-- an end-to-end test (`test-e2e`, [`e2e/run.ps1`](e2e/run.ps1)) against a throwaway **Forgejo 17.0.1** server: it registers the built `.exe` with label `windows:host`, cancels a running job (run must end `cancelled`, the step's process must be gone), then runs [`e2e/smoke.yml`](e2e/smoke.yml): `actions/checkout@v4`, the default shell (`pwsh`), `shell: powershell` (Windows PowerShell 5.1), `dotnet --version`, a job summary, and `forgejo/upload-artifact@v4` → `forgejo/download-artifact@v4` in a second job.
+- an end-to-end test (`test-e2e`, [`e2e/run.ps1`](e2e/run.ps1)) against a throwaway **Forgejo 17.0.1** server: it creates a repository-level runner through the API, connects the built `.exe` via `server.connections` with label `windows:host` and its own `host.workdir_parent`, cancels a running job (run must end `cancelled`, the step's process must be gone), then runs [`e2e/smoke.yml`](e2e/smoke.yml): `actions/checkout@v4`, the default shell (`pwsh`), `shell: powershell` (Windows PowerShell 5.1), `dotnet --version`, a job summary, and `forgejo/upload-artifact@v4` → `forgejo/download-artifact@v4` in a second job.
 
-A release is only published as non-draft when all of these pass and goal is `release`. To try a build: download `forgejo-runner-windows-amd64.exe` from the workflow run's artifacts or a draft release, then register it as in the [official docs](https://forgejo.org/docs/latest/admin/actions/runner-installation/), with a host label in the config:
+A release is only published as non-draft when all of these pass and goal is `release`. To try a build next to an existing setup (nothing else is changed):
 
-```yaml
-runner:
-  labels:
-    - windows:host   # jobs use `runs-on: windows`; steps run directly on this machine, default shell pwsh
-```
+1. Download `forgejo-runner-windows-amd64.exe` from a workflow run's artifacts or a draft release to e.g. `C:\forgejo-runner-test\`.
+2. In a test repository: *Settings > Actions > Runners > Create new runner*. A repository-level runner only takes jobs from that repository.
+3. Copy [`examples/windows-test/config.yml`](examples/windows-test/config.yml) next to the `.exe` and paste the `server.connections` snippet Forgejo shows (url, uuid, token).
+4. Start it: `.\forgejo-runner-windows-amd64.exe daemon --config config.yml` (`register`/`create-runner-file` are deprecated in v13).
+5. Add [`examples/windows-test/windows-test.yml`](examples/windows-test/windows-test.yml) to `.forgejo/workflows/` and start it via *Actions > Run workflow*; jobs use `runs-on: windows-test` and the default shell `pwsh`.
 
 **Security:** host jobs run the repository's workflow code directly on the machine with the rights of the runner's Windows account; there is no container isolation. Do not run jobs from untrusted repositories or public pull requests on a machine that holds secrets or has access to anything you care about.
 
