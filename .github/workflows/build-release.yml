@@ -184,11 +184,6 @@ jobs:
           go mod download
           go install gotest.tools/gotestsum@v1.13.0
 
-      - name: Windows - Enable Git long paths
-        # TestClone/Offline_mode_* builds bare-repo + worktree paths under %TEMP% (8.3 "RUNNER~1") that exceed
-        # Windows MAX_PATH (260); without this Git for Windows fails with "gitfile does not point to a valid repository".
-        run: git config --global core.longpaths true
-
       - name: Windows - Run tests
         # The two skipped cases are Docker CLI network-flag parsing tests that assume Linux semantics:
         # on Windows the Docker API treats "bridge" and "host" as user-defined networks. They only
@@ -197,6 +192,10 @@ jobs:
         env:
           ACT_REPOSITORY: ${{ inputs.goal == 'test-fork' && vars.TEST_FORK || 'forgejo/runner' }}  # Needed for TestRunContext_GetBindsAndMounts test case
           DOCKER_HOST: npipe:////./pipe/podman-machine-default
+          # TestClone/Offline_mode_* nests bare repo + worktree paths under the temp dir; from the default
+          # C:\Users\RUNNER~1\AppData\Local\Temp they exceed 260 characters and git fails (core.longpaths does not help).
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
 
       - name: Report test results
         uses: dorny/test-reporter@v2.6.0
