@@ -21,7 +21,8 @@ jobs:
         run: |
           '### E2E_SUMMARY_OK' | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
           'payload-from-windows' | Set-Content payload.txt
-      - uses: actions/upload-artifact@v4
+      # actions/upload-artifact@v4+ rejects non-GitHub servers (GHESNotSupportedError); use Forgejo's fork.
+      - uses: forgejo/upload-artifact@v4
         with:
           name: e2e-payload
           path: payload.txt
@@ -29,7 +30,7 @@ jobs:
     needs: host
     runs-on: windows
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: forgejo/download-artifact@v4
         with:
           name: e2e-payload
       - name: Compare artifact

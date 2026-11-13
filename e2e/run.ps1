@@ -19,7 +19,7 @@ $terminal = 'success', 'failure', 'cancelled', 'skipped'
 function Api([string]$Method, [string]$Path, $Body) {
     $request = @{ Method = $Method; Uri = "$Url/api/v1$Path"; Headers = $auth }
     if ($null -ne $Body) { $request.Body = ConvertTo-Json $Body -Depth 5; $request.ContentType = 'application/json' }
-    Invoke-RestMethod @request
+    Invoke-RestMethod @request | ForEach-Object { $_ }  # PS 7 returns a JSON array as one object; unroll it
 }
 
 function WaitFor([scriptblock]$Condition, [int]$Seconds, [string]$What) {

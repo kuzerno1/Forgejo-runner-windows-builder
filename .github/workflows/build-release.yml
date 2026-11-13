@@ -184,6 +184,11 @@ jobs:
           go mod download
           go install gotest.tools/gotestsum@v1.13.0
 
+      - name: Windows - Enable Git long paths
+        # TestClone/Offline_mode_* builds bare-repo + worktree paths under %TEMP% (8.3 "RUNNER~1") that exceed
+        # Windows MAX_PATH (260); without this Git for Windows fails with "gitfile does not point to a valid repository".
+        run: git config --global core.longpaths true
+
       - name: Windows - Run tests
         # The two skipped cases are Docker CLI network-flag parsing tests that assume Linux semantics:
         # on Windows the Docker API treats "bridge" and "host" as user-defined networks. They only
@@ -249,13 +254,14 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
-          path: .
+          pattern: forgejo-runner-windows-*
+          merge-multiple: true
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag }}
-          files: forgejo-runner-windows-*/forgejo-runner-windows-*.exe
+          files: forgejo-runner-windows-*.exe
           draft: ${{ needs.test-runner.result != 'success' || needs.test-act.result != 'success' || needs.test-e2e.result != 'success' || inputs.goal != 'release' }}
           prerelease: ${{ contains(inputs.tag, 'beta') || contains(inputs.tag, 'alpha') }}
           fail_on_unmatched_files: true

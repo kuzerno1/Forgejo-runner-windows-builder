@@ -14,7 +14,7 @@ This repository offers convenient downloads for users seeking a straightforward 
 Upstream only supports Linux; this build is unofficial. The `Build Release` workflow (manual dispatch, defaults: tag `v13.2.1`, goal `draft`) builds the unmodified upstream tag for **Windows amd64** only and runs:
 
 - the upstream `./internal/...` and `./act/...` Go tests on Windows (`test-runner` and `test-act`);
-- an end-to-end test (`test-e2e`, [`e2e/run.ps1`](e2e/run.ps1)) against a throwaway **Forgejo 17.0.1** server: it registers the built `.exe` with label `windows:host`, cancels a running job (run must end `cancelled`, the step's process must be gone), then runs [`e2e/smoke.yml`](e2e/smoke.yml): `actions/checkout@v4`, the default shell (`pwsh`), `shell: powershell` (Windows PowerShell 5.1), `dotnet --version`, a job summary, and `actions/upload-artifact@v4` → `actions/download-artifact@v4` in a second job.
+- an end-to-end test (`test-e2e`, [`e2e/run.ps1`](e2e/run.ps1)) against a throwaway **Forgejo 17.0.1** server: it registers the built `.exe` with label `windows:host`, cancels a running job (run must end `cancelled`, the step's process must be gone), then runs [`e2e/smoke.yml`](e2e/smoke.yml): `actions/checkout@v4`, the default shell (`pwsh`), `shell: powershell` (Windows PowerShell 5.1), `dotnet --version`, a job summary, and `forgejo/upload-artifact@v4` → `forgejo/download-artifact@v4` in a second job.
 
 A release is only published as non-draft when all of these pass and goal is `release`. To try a build: download `forgejo-runner-windows-amd64.exe` from the workflow run's artifacts or a draft release, then register it as in the [official docs](https://forgejo.org/docs/latest/admin/actions/runner-installation/), with a host label in the config:
 
@@ -30,6 +30,8 @@ runner:
 
 - Only native Windows host jobs are tested. Docker/container jobs, Windows containers, `386` and `arm64` are not built or tested.
 - `test-act` skips two upstream Docker CLI parsing tests (`TestParseRunLinks/bridge/onelink`, `TestParseNetworkConfig/invalid-mixed-network-types`): they assume Linux network semantics and fail on Windows, where the Docker API treats `bridge`/`host` as user-defined networks. This only concerns the Docker backend.
+- `actions/upload-artifact@v4+`/`download-artifact@v4+` refuse non-GitHub servers (`GHESNotSupportedError`); use `forgejo/upload-artifact@v4` / `forgejo/download-artifact@v4` (or `@v3`). This is not Windows-specific.
+- Git for Windows limits paths to 260 characters unless `git config --system core.longpaths true` is set. The runner caches actions as `<workdir_parent>\xx\<62 hex>\worktrees\<62 hex>`, so a deep `host.workdir_parent` can break action checkouts; `test-act` enables long paths because upstream `TestClone/Offline_mode_*` exceeds the limit under `%TEMP%`.
 - The e2e test covers one runner on a GitHub-hosted `windows-latest` VM, not long-running service installs, upgrades or your production setup.
 
 ## What is Forgejo?
