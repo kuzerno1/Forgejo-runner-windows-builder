@@ -206,10 +206,15 @@ jobs:
           reporter: golang-json
 
   test-e2e:
-    name: E2E - Windows host jobs against Forgejo 17
+    name: E2E - Windows host jobs against Forgejo ${{ matrix.forgejo }}
     needs: build
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        forgejo: ['15.0.12', '17.0.1']  # LTS and the version this build was validated against
     env:
+      FORGEJO_IMAGE: codeberg.org/forgejo/forgejo:${{ matrix.forgejo }}-rootless
       FORGEJO_ROOT_URL: 'http://localhost:3000/'
       DOCKER_HOST: npipe:////./pipe/podman-machine-default
 
