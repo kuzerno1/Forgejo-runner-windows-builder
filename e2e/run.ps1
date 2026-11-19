@@ -1,5 +1,5 @@
 # End-to-end smoke test: connects a Windows forgejo-runner.exe as a repository-level runner to a running,
-# throwaway Forgejo server (admin user already created), then dispatches e2e/cancel.yml and
+# throwaway Forgejo server (15 LTS or newer, admin user already created), then dispatches e2e/cancel.yml and
 # e2e/smoke.yml as native Windows host jobs and asserts their results through the Forgejo API.
 param(
     [Parameter(Mandatory)][string]$Runner,
@@ -37,7 +37,12 @@ function Dispatch([string]$Workflow, $Inputs = @{}) {
     $run
 }
 
-function JobLog($Job) { [string](Api GET "/repos/$repo/actions/jobs/$($Job.id)/logs") }
+# Forgejo 15 has no API for cancelling runs, job logs or artifacts; use the endpoints its web UI calls.
+function Web([string]$Method, [string]$Path) {
+    $request = @{ Method = $Method; Uri = "$Url/$repo/actions/runs/$Path"; WebSession = $web }
+    if ($Method -eq 'Post') { $request.Body = '{"logCursors":[]}'; $request.ContentType = 'application/json' }
+    Invoke-RestMethod @request
+}
 
 function AssertContains([string]$Text, [string]$Marker, [string]$Where) {
     if (-not $Text.Contains($Marker)) { throw "Expected '$Marker' in $Where" }
@@ -55,6 +60,7 @@ try {
         @{ operation = 'create'; path = ".forgejo/workflows/$name"; content = [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $PSScriptRoot $name))) }
     }
     Api POST "/repos/$repo/contents" @{ branch = 'main'; message = 'Add e2e workflows'; files = @($files) } | Out-Null
+    Invoke-WebRequest -Method Post "$Url/user/login" -Body @{ user_name = $User; password = $Password } -SessionVariable web | Out-Null
 
     # Create the runner in Forgejo and declare it in server.connections, the non-deprecated v13 flow
     # (Forgejo shows the same uuid/token/snippet under Settings > Actions > Runners > Create new runner).
@@ -84,7 +90,7 @@ server:
     $run = Dispatch 'cancel.yml' @{ pidfile = $pidFile }
     WaitFor { (Test-Path $pidFile) -and (Get-Content $pidFile) } 300 'cancel job step to start' | Out-Null
     $stepPid = [int](Get-Content $pidFile)
-    Api POST "/repos/$repo/actions/runs/$($run.id)/cancel" | Out-Null
+    Web Post "$($run.run_number)/cancel" | Out-Null
     $status = WaitFor { $s = (Api GET "/repos/$repo/actions/runs/$($run.id)").status; if ($s -in $terminal) { $s } } 120 'cancelled run to finish'
     if ($status -ne 'cancelled') { throw "Cancelled run ended as '$status'" }
     WaitFor { -not (Get-Process -Id $stepPid -ErrorAction SilentlyContinue) } 60 "step process $stepPid to exit" | Out-Null
@@ -94,26 +100,27 @@ server:
     # 2. Smoke run on the same daemon: checkout, shells, .NET, job summary, artifact upload + download.
     $run = Dispatch 'smoke.yml'
     $status = WaitFor { $s = (Api GET "/repos/$repo/actions/runs/$($run.id)").status; if ($s -in $terminal) { $s } } 900 'smoke run to finish'
-    $jobs = @(Api GET "/repos/$repo/actions/runs/$($run.id)/jobs")
+    $jobs = @((Web Post "$($run.run_number)/jobs/0/attempt/1").state.run.jobs)
     $logs = @{}
-    foreach ($j in $jobs) {
-        $logs[$j.name] = JobLog $j
-        Write-Host "::group::Forgejo log of job '$($j.name)' ($($j.status))"; Write-Host $logs[$j.name]; Write-Host '::endgroup::'
+    $summaries = @()
+    $hasSummaries = $false
+    for ($i = 0; $i -lt $jobs.Count; $i++) {
+        $name = $jobs[$i].name
+        $logs[$name] = [string](Web Get "$($run.run_number)/jobs/$i/attempt/1/logs")
+        Write-Host "::group::Forgejo log of job '$name' ($($jobs[$i].status))"; Write-Host $logs[$name]; Write-Host '::endgroup::'
+        $current = (Web Post "$($run.run_number)/jobs/$i/attempt/1").state.currentJob
+        if ($current.PSObject.Properties['summaries']) { $hasSummaries = $true; $summaries += $current.summaries }
     }
     if ($status -ne 'success') { throw "Smoke run ended as '$status'" }
     foreach ($marker in 'CHECKOUT_OK', 'DEFAULT_SHELL_OK Core', 'WINPS_OK 5.', 'DOTNET_OK') { AssertContains $logs['host'] $marker 'host job log' }
     AssertContains $logs['download'] 'ARTIFACT_OK' 'download job log'
 
-    $artifacts = @(Api GET "/repos/$repo/actions/runs/$($run.id)/artifacts")
-    if (-not ($artifacts | Where-Object name -eq 'e2e-payload')) { throw 'artifact e2e-payload not listed by the API' }
-    Write-Host 'OK: artifact listed by the API'
+    if (-not ((Web Get "$($run.run_number)/artifacts").artifacts | Where-Object name -eq 'e2e-payload')) { throw 'artifact e2e-payload not listed' }
+    Write-Host 'OK: artifact listed by Forgejo'
 
-    # Job summaries are only exposed through the web job view (Forgejo 17 + runner >= 13.2).
-    $summaries = foreach ($index in 0..($jobs.Count - 1)) {
-        (Invoke-RestMethod -Method Post -Uri "$Url/$repo/actions/runs/$($run.run_number)/jobs/$index/attempt/1" `
-            -ContentType 'application/json' -Body '{"logCursors":[]}').state.currentJob.summaries
-    }
-    AssertContains ($summaries -join "`n") 'E2E_SUMMARY_OK' 'job summary'
+    # Job summaries are shown by Forgejo 17+ (runner >= 13.2); older servers have no summaries field.
+    if ($hasSummaries) { AssertContains ($summaries -join "`n") 'E2E_SUMMARY_OK' 'job summary' }
+    else { Write-Host "SKIP: job summaries (not supported by Forgejo $((Api GET '/version').version))" }
     if ($daemon.HasExited) { throw 'runner daemon exited during the smoke run' }
     if (-not (Get-ChildItem $workdirParent -ErrorAction SilentlyContinue)) { throw "host.workdir_parent $workdirParent was not used" }
     Write-Host "OK: jobs ran under host.workdir_parent $workdirParent"
